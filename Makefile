@@ -1,3 +1,8 @@
+default: koboldcpp koboldcpp_noavx2 koboldcpp_openblas koboldcpp_openblas_noavx2 koboldcpp_clblast
+simple: koboldcpp koboldcpp_noavx2
+dev: koboldcpp_openblas
+
+
 ifndef UNAME_S
 UNAME_S := $(shell uname -s)
 endif
@@ -10,9 +15,13 @@ ifndef UNAME_M
 UNAME_M := $(shell uname -m)
 endif
 
-ifndef ARCH_LINUX
-ARCH_LINUX := $(shell grep "Arch Linux" /etc/os-release 2>/dev/null)
-ARCH_LIKE := $(shell grep "ID_LIKE=arch" /etc/os-release 2>/dev/null)
+ARCH_LINUX1 := $(shell grep "Arch Linux" /etc/os-release 2>/dev/null)
+ARCH_LINUX2 := $(shell grep "ID_LIKE=arch" /etc/os-release 2>/dev/null)
+ifdef ARCH_LINUX1
+ARCH_ADD = -lcblas
+endif
+ifdef ARCH_LINUX2
+ARCH_ADD = -lcblas
 endif
 
 CCV := $(shell $(CC) --version | head -n 1)
@@ -36,8 +45,8 @@ endif
 #
 
 # keep standard at C11 and C++11
-CFLAGS   = -I.              -Ofast -DNDEBUG -std=c11   -fPIC
-CXXFLAGS = -I. -I./examples -Ofast -DNDEBUG -std=c++11 -fPIC
+CFLAGS   = -I.              -I./include -I./include/CL -Ofast -DNDEBUG -std=c11   -fPIC
+CXXFLAGS = -I. -I./examples -I./include -I./include/CL -Ofast -DNDEBUG -std=c++11 -fPIC
 LDFLAGS  =
 
 # these are used on windows, to build some libraries with extra old device compatibility
@@ -97,7 +106,7 @@ endif
 ifneq ($(filter ppc64%,$(UNAME_M)),)
 	POWER9_M := $(shell grep "POWER9" /proc/cpuinfo)
 	ifneq (,$(findstring POWER9,$(POWER9_M)))
-		CFLAGS += -mcpu=power9
+		CFLAGS   += -mcpu=power9
 		CXXFLAGS += -mcpu=power9
 	endif
 	# Require c++23's std::byteswap for big-endian support.
@@ -115,8 +124,13 @@ ifndef LLAMA_NO_ACCELERATE
 endif
 
 ifdef LLAMA_CUBLAS
-	CFLAGS  += -DGGML_USE_CUBLAS -I/usr/local/cuda/include
-	LDFLAGS += -lcublas_static -lculibos -lcudart_static -lcublasLt_static -lpthread -ldl -L/usr/local/cuda/lib64
+	CFLAGS    += -DGGML_USE_CUBLAS -I/usr/local/cuda/include
+	LDFLAGS   += -lcublas -lculibos -lcudart -lcublasLt -lpthread -ldl -lrt -L/usr/local/cuda/lib64
+	OBJS      += ggml-cuda.o
+	NVCC      = nvcc
+	NVCCFLAGS = --forward-unknown-to-host-linker -arch=native
+ggml-cuda.o: ggml-cuda.cu ggml-cuda.h
+	$(NVCC) $(NVCCFLAGS) $(CXXFLAGS) -c $< -o $@
 endif
 ifdef LLAMA_GPROF
 	CFLAGS   += -pg
@@ -155,11 +169,11 @@ else
 	DEFAULT_BUILD = $(CXX) $(CXXFLAGS)  $^ -shared -o $@.so $(LDFLAGS)
 	NOAVX2_BUILD = $(CXX) $(CXXFLAGS) $^ -shared -o $@.so $(LDFLAGS)
 	ifdef LLAMA_OPENBLAS
-	OPENBLAS_BUILD = $(CXX) $(CXXFLAGS) $^ -lcblas -lopenblas -shared -o $@.so $(LDFLAGS)
-	OPENBLAS_NOAVX2_BUILD = $(CXX) $(CXXFLAGS) $^ -lcblas -lopenblas -shared -o $@.so $(LDFLAGS)
+	OPENBLAS_BUILD = $(CXX) $(CXXFLAGS) $^ $(ARCH_ADD) -lopenblas -shared -o $@.so $(LDFLAGS)
+	OPENBLAS_NOAVX2_BUILD = $(CXX) $(CXXFLAGS) $^ $(ARCH_ADD) -lopenblas -shared -o $@.so $(LDFLAGS)
 	endif	
 	ifdef LLAMA_CLBLAST
-	CLBLAST_BUILD = $(CXX) $(CXXFLAGS) $^ -lclblast -lOpenCL -lcblas -lopenblas -shared -o $@.so $(LDFLAGS)
+	CLBLAST_BUILD = $(CXX) $(CXXFLAGS) $^ -lclblast -lOpenCL $(ARCH_ADD) -lopenblas -shared -o $@.so $(LDFLAGS)
 	endif
 
 	ifndef LLAMA_OPENBLAS
@@ -183,10 +197,6 @@ $(info I LDFLAGS:  $(LDFLAGS))
 $(info I CC:       $(CCV))
 $(info I CXX:      $(CXXV))
 $(info )
-
-default: koboldcpp koboldcpp_noavx2 koboldcpp_openblas koboldcpp_openblas_noavx2 koboldcpp_clblast
-simple: koboldcpp koboldcpp_noavx2
-dev: koboldcpp_openblas
 
 #
 # Build library
@@ -225,40 +235,34 @@ common.o: examples/common.cpp examples/common.h
 expose.o: expose.cpp expose.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-llama_adapter.o: llama_adapter.cpp
-	$(CXX) $(CXXFLAGS) -c $< -o $@
-
 gpttype_adapter.o: gpttype_adapter.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 clean:
-	rm -vf *.o main quantize_llama quantize_gpt2 quantize_gptj quantize-stats perplexity embedding benchmark-q4_0-matmult main.exe quantize_llama.exe quantize_gptj.exe quantize_gpt2.exe koboldcpp.dll koboldcpp_openblas.dll koboldcpp_noavx2.dll koboldcpp_openblas_noavx2.dll koboldcpp_clblast.dll koboldcpp.so koboldcpp_openblas.so koboldcpp_noavx2.so koboldcpp_openblas_noavx2.so koboldcpp_clblast.so gptj.exe gpt2.exe
+	rm -vf *.o main quantize_llama quantize_gpt2 quantize_gptj quantize_neox quantize-stats perplexity embedding benchmark-q4_0-matmult main.exe quantize_llama.exe quantize_gptj.exe quantize_gpt2.exe quantize_neox.exe koboldcpp.dll koboldcpp_openblas.dll koboldcpp_noavx2.dll koboldcpp_openblas_noavx2.dll koboldcpp_clblast.dll koboldcpp.so koboldcpp_openblas.so koboldcpp_noavx2.so koboldcpp_openblas_noavx2.so koboldcpp_clblast.so gptj.exe gpt2.exe
 
-main: examples/main/main.cpp ggml.o llama.o common.o
+main: examples/main/main.cpp ggml.o llama.o common.o $(OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 	@echo
 	@echo '====  Run ./main -h for help.  ===='
 	@echo
 
-koboldcpp: ggml.o ggml_rwkv.o ggml_v1.o expose.o common.o llama_adapter.o gpttype_adapter.o
+koboldcpp: ggml.o ggml_rwkv.o ggml_v1.o expose.o common.o gpttype_adapter.o
 	$(DEFAULT_BUILD)
 
-koboldcpp_openblas: ggml_openblas.o ggml_rwkv.o ggml_v1.o expose.o common.o llama_adapter.o gpttype_adapter.o 
+koboldcpp_openblas: ggml_openblas.o ggml_rwkv.o ggml_v1.o expose.o common.o gpttype_adapter.o 
 	$(OPENBLAS_BUILD)
 	
-koboldcpp_noavx2: ggml_noavx2.o ggml_rwkv.o ggml_v1_noavx2.o expose.o common.o llama_adapter.o gpttype_adapter.o 
+koboldcpp_noavx2: ggml_noavx2.o ggml_rwkv.o ggml_v1_noavx2.o expose.o common.o gpttype_adapter.o 
 	$(NOAVX2_BUILD)
 
-koboldcpp_openblas_noavx2: ggml_openblas_noavx2.o ggml_rwkv.o ggml_v1_noavx2.o expose.o common.o llama_adapter.o gpttype_adapter.o 
+koboldcpp_openblas_noavx2: ggml_openblas_noavx2.o ggml_rwkv.o ggml_v1_noavx2.o expose.o common.o gpttype_adapter.o 
 	$(OPENBLAS_NOAVX2_BUILD)
 
-koboldcpp_clblast: ggml_clblast.o ggml_rwkv.o ggml_v1.o expose.o common.o llama_adapter.o gpttype_adapter.o 
+koboldcpp_clblast: ggml_clblast.o ggml_rwkv.o ggml_v1.o expose.o common.o gpttype_adapter.o 
 	$(CLBLAST_BUILD)
 		
 quantize_llama: examples/quantize/quantize.cpp ggml.o llama.o
-	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
-
-quantize-stats: examples/quantize-stats/quantize-stats.cpp ggml.o llama.o
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
 quantize_gptj: ggml.o llama.o otherarch/tools/gptj_quantize.cpp
@@ -267,23 +271,29 @@ quantize_gptj: ggml.o llama.o otherarch/tools/gptj_quantize.cpp
 quantize_gpt2: ggml.o llama.o otherarch/tools/gpt2_quantize.cpp
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
-perplexity: examples/perplexity/perplexity.cpp ggml.o llama.o common.o
+quantize_neox: ggml.o llama.o otherarch/tools/neox_quantize.cpp
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
-embedding: examples/embedding/embedding.cpp ggml.o llama.o common.o
+quantize-stats: examples/quantize-stats/quantize-stats.cpp ggml.o llama.o $(OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
-vdot: pocs/vdot/vdot.cpp ggml.o
+perplexity: examples/perplexity/perplexity.cpp ggml.o llama.o common.o $(OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
-libllama.so: llama.o ggml.o
+embedding: examples/embedding/embedding.cpp ggml.o llama.o common.o $(OBJS)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
+
+vdot: pocs/vdot/vdot.cpp ggml.o $(OBJS)
+	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
+
+libllama.so: llama.o ggml.o $(OBJS)
 	$(CXX) $(CXXFLAGS) -shared -fPIC -o $@ $^ $(LDFLAGS)
 
 #
 # Tests
 #
 
-benchmark: examples/benchmark/benchmark-q4_0-matmult.c ggml.o
+benchmark: examples/benchmark/benchmark-q4_0-matmult.c ggml.o $(OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o benchmark-q4_0-matmult $(LDFLAGS)
 	./benchmark-q4_0-matmult
 
