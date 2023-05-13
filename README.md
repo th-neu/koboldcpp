@@ -46,6 +46,7 @@ For more information, be sure to run the program with the --help flag.
   - For Arch Linux: Install `cblas` `openblas` and `clblast`. 
   - For Debian: Install `libclblast-dev` and `libopenblas-dev`.
 - After all binaries are built, you can run the python script with the command `koboldcpp.py [ggml_model.bin] [port]`
+- Note: Many OSX users have found that the using Accelerate is actually faster than OpenBLAS. To try, you may wish to run with `--noblas` and compare speeds.
 
 ## Considerations
 - ZERO or MINIMAL changes as possible to parent repo files - do not move their function declarations elsewhere! We want to be able to update the repo and pull any changes automatically.
@@ -67,6 +68,6 @@ For more information, be sure to run the program with the --help flag.
   - LLAMA (All versions including ggml, ggmf, ggjt, gpt4all). Supports CLBlast and OpenBLAS acceleration for all versions.
   - GPT-2 (All versions, including legacy f16, newer format + quanitzed, cerebras) Supports OpenBLAS acceleration only for newer format. 
   - GPT-J (All versions including legacy f16, newer format + quantized, pyg.cpp, new pygmalion, janeway etc.) Supports OpenBLAS acceleration only for newer format. 
-  - RWKV (f16 GGMF format), unaccelerated due to RNN properties.
-  - GPT-NeoX / Pythia
+  - RWKV (all formats except Q4_1_O).
+  - GPT-NeoX / Pythia / StableLM / Dolly / RedPajama
   - Basically every single current and historical GGML format that has ever existed should be supported, except for bloomz.cpp due to lack of demand.

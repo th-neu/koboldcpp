@@ -19,7 +19,7 @@
 #    define LLAMA_API
 #endif
 
-#define LLAMA_FILE_VERSION           1
+#define LLAMA_FILE_VERSION           2
 #define LLAMA_FILE_MAGIC             'ggjt'
 #define LLAMA_FILE_MAGIC_UNVERSIONED 'ggml'
 #define LLAMA_SESSION_MAGIC          'ggsn'
@@ -134,7 +134,7 @@ extern "C" {
     // Copies the state to the specified destination address.
     // Destination needs to have allocated enough memory.
     // Returns the number of bytes copied
-    LLAMA_API size_t llama_copy_state_data(struct llama_context * ctx, uint8_t * dest);
+    LLAMA_API size_t llama_copy_state_data(struct llama_context * ctx, uint8_t * dst);
 
     // Set the state reading from the specified address
     // Returns the number of bytes read

@@ -345,7 +345,8 @@ bool stablelm_eval(
         const int n_past,
         const std::vector<gpt_vocab::id> & embd_inp,
               std::vector<float>         & embd_w,
-              size_t                     & mem_per_token) {
+              size_t                     & mem_per_token,
+              FileFormat file_format) {
     const int N = embd_inp.size();
 
     const auto & hparams = model.hparams;
@@ -360,7 +361,7 @@ bool stablelm_eval(
     static size_t buf_size = 256u*1024*1024;
     static void * buf = malloc(buf_size);
 
-    if (mem_per_token > 0 && (mem_per_token*N*2 + 16u*1024*1024) > buf_size) {
+    if (mem_per_token > 0 && (mem_per_token*N*2 + 48u*1024*1024) > buf_size) {
         const size_t buf_size_new = 360u*1024*1024 + 2*(mem_per_token*N); // add 10% to account for ggml object overhead
         //printf("\n%s: reallocating buffer from %zu to %zu bytes\n", __func__, buf_size, buf_size_new);
 
@@ -494,6 +495,12 @@ bool stablelm_eval(
             }
         }
 
+        if(file_format==FileFormat::NEOX_3)
+        {
+            // layer input + Attn
+            cur  = ggml_add(ctx0, cur, inpL);
+        }
+
         struct ggml_tensor * inpFF = cur;
 
         // feed-forward network
@@ -502,7 +509,7 @@ bool stablelm_eval(
             // post attention layer norm
             // note here we pass inpL instead of cur
             {
-                cur = ggml_norm(ctx0, inpL);
+                cur = ggml_norm(ctx0, (file_format==FileFormat::NEOX_3?cur:inpL));
 
                 cur = ggml_add(ctx0,
                     ggml_mul(ctx0,
@@ -533,11 +540,17 @@ bool stablelm_eval(
                     cur);
         }
 
-        // layer input + FF
-        cur  = ggml_add(ctx0, cur, inpFF);
-
-        // input for next layer
-        inpL = ggml_add(ctx0, cur, inpL);
+        if (file_format == FileFormat::NEOX_3)
+        {
+            // layer input + FF
+            inpL = ggml_add(ctx0, cur, inpFF);
+        }
+        else
+        {
+            cur = ggml_add(ctx0, cur, inpFF);
+            // input for next layer
+            inpL = ggml_add(ctx0, cur, inpL);
+        }
     }
 
     // norm

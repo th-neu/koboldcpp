@@ -225,8 +225,11 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
 
     printf("System Info: %s\n", llama_print_system_info());
 
-    if(file_format == FileFormat::GGML || file_format == FileFormat::GGHF || file_format == FileFormat::GGJT)
+    if(file_format == FileFormat::GGML || file_format == FileFormat::GGHF || file_format == FileFormat::GGJT || file_format == FileFormat::GGJT_2)
     {
+        //newer format has bit unshuffling
+        SetQuantsUnshuffled(file_format== FileFormat::GGJT_2);        
+
         llama_ctx_params = llama_context_default_params();
         llama_ctx_params.n_ctx = inputs.max_context_length;
         llama_ctx_params.n_parts = -1;
@@ -243,7 +246,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, modelname.c_str());
             return ModelLoadResult::FAIL;
         }
-        if (file_format < FileFormat::GGJT)
+        if (file_format < FileFormat::GGJT_2)
         {
             printf("\n---\nWarning: Your model has an INVALID or OUTDATED format (ver %d). Please reconvert it for better results!\n---\n", file_format);
         }
@@ -264,7 +267,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         }
 
         //determine mem per token
-        const std::vector<int> tmp = {0, 1, 2, 3};
+        const std::vector<int> tmp = {1, 2, 3, 4};
         llama_eval(llama_ctx_v1, tmp.data(), tmp.size(), 0, params.n_threads);
         return ModelLoadResult::SUCCESS;
 
@@ -369,7 +372,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
 
         return ModelLoadResult::SUCCESS;
     }
-    else if(file_format==FileFormat::NEOX_1 || file_format==FileFormat::NEOX_2)
+    else if(file_format==FileFormat::NEOX_1 || file_format==FileFormat::NEOX_2 || file_format==FileFormat::NEOX_3)
     {
         ModelLoadResult res = stablelm_model_load(params.model, neox_ctx, vocab, file_format);       
         if(res==ModelLoadResult::FAIL)
@@ -383,7 +386,23 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             return res;
         }
          // determine the required inference memory per token:    
-        stablelm_eval(neox_ctx, params.n_threads, 0, { 0, 1, 2, 3 }, logits, mem_per_token);    
+        stablelm_eval(neox_ctx, params.n_threads, 0, { 0, 1, 2, 3 }, logits, mem_per_token, file_format);
+
+        if(logits.size()>0 && file_format==FileFormat::NEOX_2 && !IsNanCheck(logits[0]))
+        {
+            //run the black magic eval to determine if it's redpajama. VERY UGLY HACK!
+            std::vector<int> test_embd = ::gpt_tokenize(vocab, "1 2 3 4 5 6 7");           
+            stablelm_eval(neox_ctx, params.n_threads, 0, test_embd, logits, mem_per_token, FileFormat::NEOX_3);          
+            int topid = std::max_element(logits.begin(),logits.end())-logits.begin();
+            std::string predicted = vocab.id_to_token[topid].c_str();
+            if(predicted.find("8") != std::string::npos)
+            {
+                printf("\n---\nRedPajama NeoX Detected! Switching to new format! (use_parallel_residual=False)\n");
+                ggml_free(neox_ctx.ctx);
+                return ModelLoadResult::RETRY_LOAD;
+            }
+        }
+
         return ModelLoadResult::SUCCESS;
     }
     else
@@ -468,7 +487,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
     // tokenize the prompt
     std::vector<int> embd_inp;
 
-    if (file_format == FileFormat::GGML || file_format == FileFormat::GGHF || file_format == FileFormat::GGJT)
+    if (file_format == FileFormat::GGML || file_format == FileFormat::GGHF || file_format == FileFormat::GGJT || file_format == FileFormat::GGJT_2)
     {
         params.prompt.insert(0, 1, ' ');
         if (file_format == FileFormat::GGML)
@@ -514,13 +533,11 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
     }
 
     //if using BLAS and prompt is big enough, switch to single thread and use a huge batch
-    bool approved_format = (file_format == FileFormat::GGML ||
-                            file_format == FileFormat::GGHF || 
-                            file_format == FileFormat::GGJT ||
-                            file_format == FileFormat::GPT2_2 || 
-                            file_format == FileFormat::GPTJ_3 ||
-                            file_format == FileFormat::NEOX_1 || 
-                            file_format == FileFormat::NEOX_2);
+    bool approved_format = !(file_format == FileFormat::BADFORMAT ||
+                            file_format == FileFormat::GPT2_1 || 
+                            file_format == FileFormat::GPTJ_1 ||
+                            file_format == FileFormat::GPTJ_2 || 
+                            file_format == FileFormat::RWKV_1);
     bool blasmode = (approved_format && embd_inp.size() >= 32 && ggml_cpu_has_blas());
     // bool blasmode = false;
     int original_batch = params.n_batch;
@@ -529,7 +546,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
     {
         //for non llama, limit to 256
         int bbs = blasbatchsize;
-        if (file_format != FileFormat::GGML && file_format != FileFormat::GGHF && file_format != FileFormat::GGJT)
+        if (file_format != FileFormat::GGML && file_format != FileFormat::GGHF && file_format != FileFormat::GGJT && file_format != FileFormat::GGJT_2)
         {
             bbs = (blasbatchsize > 256 ? 256 : blasbatchsize);
         }
@@ -559,7 +576,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
     double time1 = 0, time2 = 0;
     int32_t n_vocab = 0;
 
-    if (file_format == FileFormat::GGML || file_format == FileFormat::GGHF || file_format == FileFormat::GGJT)
+    if (file_format == FileFormat::GGML || file_format == FileFormat::GGHF || file_format == FileFormat::GGJT || file_format == FileFormat::GGJT_2)
     {
         n_vocab = llama_n_vocab(llama_ctx_v1);
     }
@@ -579,7 +596,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
     {
         n_vocab = gpt2_ctx_v2.hparams.n_vocab;
     }
-    else if(file_format == FileFormat::NEOX_1 || file_format == FileFormat::NEOX_2)
+    else if(file_format == FileFormat::NEOX_1 || file_format == FileFormat::NEOX_2 || file_format == FileFormat::NEOX_3)
     {
         n_vocab = neox_ctx.hparams.n_vocab;
     }
@@ -610,18 +627,18 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
     if(debugmode)
     {
         printf("\n[Debug: Dump Input Tokens]\n");
-        if (file_format == FileFormat::GGML || file_format == FileFormat::GGHF || file_format == FileFormat::GGJT)
+        if (file_format == FileFormat::GGML || file_format == FileFormat::GGHF || file_format == FileFormat::GGJT || file_format == FileFormat::GGJT_2)
         {
             for (auto id : embd_inp)
             {
-                printf("'%s', ",llama_token_to_str(llama_ctx_v1, id));
+                printf("'%s (%d)', ",llama_token_to_str(llama_ctx_v1, id),id);
             }
         }
         else
         {
             for (auto id : embd_inp)
             {
-                printf("'%s', ",vocab.id_to_token[id].c_str());
+                printf("'%s (%d)', ",vocab.id_to_token[id].c_str(),id);
             }
         }
         printf("\n");
@@ -647,7 +664,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
 
             bool evalres = false;
 
-            if (file_format == FileFormat::GGML || file_format == FileFormat::GGHF || file_format == FileFormat::GGJT)
+            if (file_format == FileFormat::GGML || file_format == FileFormat::GGHF || file_format == FileFormat::GGJT || file_format == FileFormat::GGJT_2)
             {
                 evalres = (llama_eval(llama_ctx_v1, embd.data(), embdsize, n_past, params.n_threads)==0);
             }
@@ -665,9 +682,9 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
             {
                 evalres = gpt2_eval(gpt2_ctx_v2, params.n_threads, n_past, embd, logits, mem_per_token, file_format);
             }
-            else if(file_format==FileFormat::NEOX_1 || file_format == FileFormat::NEOX_2)
+            else if(file_format==FileFormat::NEOX_1 || file_format == FileFormat::NEOX_2 || file_format == FileFormat::NEOX_3)
             {
-                evalres = stablelm_eval(neox_ctx, params.n_threads, n_past, embd, logits, mem_per_token);
+                evalres = stablelm_eval(neox_ctx, params.n_threads, n_past, embd, logits, mem_per_token, file_format);
             }
             else if(file_format==FileFormat::GPTJ_1 || file_format==FileFormat::GPTJ_2)
             {
@@ -708,7 +725,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
                 printf("\n");
             }
 
-            if(file_format == FileFormat::GGML || file_format == FileFormat::GGHF || file_format == FileFormat::GGJT)
+            if(file_format == FileFormat::GGML || file_format == FileFormat::GGHF || file_format == FileFormat::GGJT || file_format == FileFormat::GGJT_2)
             {
                 auto logits = llama_get_logits(llama_ctx_v1);
 
@@ -758,7 +775,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
             // decrement remaining sampling budget
             --remaining_tokens;
 
-            if (file_format == FileFormat::GGML || file_format == FileFormat::GGHF || file_format == FileFormat::GGJT)
+            if (file_format == FileFormat::GGML || file_format == FileFormat::GGHF || file_format == FileFormat::GGJT || file_format == FileFormat::GGJT_2)
             {
                 concat_output += llama_token_to_str(llama_ctx_v1, id);
                 if(unbanTokens && id==llama_token_eos())

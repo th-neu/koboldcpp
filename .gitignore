@@ -46,6 +46,8 @@ zig-out/
 zig-cache/
 
 ppl-*.txt
+qnt-*.txt
+perf-*.txt
 
 examples/jeopardy/results.txt
 koboldcpp.so
