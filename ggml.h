@@ -250,6 +250,7 @@ extern "C" {
     enum ggml_backend {
         GGML_BACKEND_CPU = 0,
         GGML_BACKEND_CUDA = 1,
+        GGML_BACKEND_CL = 2,
     };
 
     // model file types
@@ -852,7 +853,7 @@ extern "C" {
             int                   n_past);
 
     // in-place, returns view(a)
-    GGML_API struct ggml_tensor * gml_diag_mask_zero_inplace(
+    GGML_API struct ggml_tensor * ggml_diag_mask_zero_inplace(
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
             int                   n_past);
@@ -1092,6 +1093,9 @@ extern "C" {
     //
 
     void SetQuantsUnshuffled(bool unshuffled);
+    bool GetQuantsUnshuffled();
+    void SetGPULayers(bool layers);
+    bool GetGPULayers();
 
     GGML_API int ggml_cpu_has_avx        (void);
     GGML_API int ggml_cpu_has_avx2       (void);

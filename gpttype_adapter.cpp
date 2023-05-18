@@ -15,7 +15,6 @@
 #include "llamaextra.cpp"
 
 //concat source files into one file for compilation purposes
-#include "common-ggml.cpp"
 #include "utils.cpp"
 #include "gptj_v1.cpp"
 #include "gptj_v2.cpp"
@@ -33,7 +32,7 @@ static gptj_model_v1 gptj_ctx_v1;
 static gptj_model gptj_ctx_v2;
 static gpt2_v1_model gpt2_ctx_v1;
 static gpt2_model gpt2_ctx_v2;
-static stablelm_model neox_ctx;
+static gpt_neox_model neox_ctx;
 static rwkv_context * rwkv_ctx_v1;
 static llama_context_params llama_ctx_params;
 static llama_context * llama_ctx_v1;
@@ -335,7 +334,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         //newer format has bit unshuffling
         SetQuantsUnshuffled(file_format == FileFormat::GPT2_3);   
 
-        ModelLoadResult res = gpt2_model_load(params.model, gpt2_ctx_v2, vocab, file_format);
+        ModelLoadResult res = gpt2_model_load(params.model, gpt2_ctx_v2, vocab, file_format, inputs.gpulayers);
         if(res==ModelLoadResult::FAIL)
         {
             fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, params.model.c_str());
@@ -378,7 +377,10 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
     }
     else if(file_format==FileFormat::NEOX_1 || file_format==FileFormat::NEOX_2 || file_format==FileFormat::NEOX_3 || file_format==FileFormat::NEOX_4 || file_format==FileFormat::NEOX_5)
     {
-        ModelLoadResult res = stablelm_model_load(params.model, neox_ctx, vocab, file_format);       
+        //newer format has bit unshuffling
+        SetQuantsUnshuffled(file_format==FileFormat::NEOX_4 || file_format==FileFormat::NEOX_5);   
+
+        ModelLoadResult res = gpt_neox_model_load(params.model, neox_ctx, vocab, file_format);       
         if(res==ModelLoadResult::FAIL)
         {
             fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, params.model.c_str());
@@ -390,22 +392,23 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             return res;
         }
 
-        //newer format has bit unshuffling
-        SetQuantsUnshuffled(file_format==FileFormat::NEOX_4 || file_format==FileFormat::NEOX_5);   
-
          // determine the required inference memory per token:    
-        stablelm_eval(neox_ctx, params.n_threads, 0, { 0, 1, 2, 3 }, logits, mem_per_token, file_format);
+        gpt_neox_eval(neox_ctx, params.n_threads, 0, { 0, 1, 2, 3 }, logits, mem_per_token);
 
-        if(logits.size()>0 && (file_format==FileFormat::NEOX_2 || file_format==FileFormat::NEOX_4) && !IsNanCheck(logits[0]))
+        if(logits.size()>0 && file_format==FileFormat::NEOX_2 && !IsNanCheck(logits[0]))
         {
             //run the black magic eval to determine if it's redpajama. VERY UGLY HACK!
-            std::vector<int> test_embd = ::gpt_tokenize(vocab, "1 2 3 4 5 6 7");           
-            stablelm_eval(neox_ctx, params.n_threads, 0, test_embd, logits, mem_per_token, (file_format==FileFormat::NEOX_2?FileFormat::NEOX_3:FileFormat::NEOX_5));          
+            std::vector<int> test_embd = ::gpt_tokenize(vocab, "1 2 3 4 5 6 7");
+            auto orig_par_res = neox_ctx.hparams.par_res;
+            neox_ctx.hparams.par_res = 0; //test with residual false
+            gpt_neox_eval(neox_ctx, params.n_threads, 0, test_embd, logits, mem_per_token);
+            neox_ctx.hparams.par_res = orig_par_res;      
             int topid = std::max_element(logits.begin(),logits.end())-logits.begin();
             std::string predicted = vocab.id_to_token[topid].c_str();
-            if(predicted.find("8") != std::string::npos)
+            auto findresult = predicted.find("8");
+            if(findresult != std::string::npos && findresult<2)
             {
-                printf("\n---\nRedPajama NeoX Detected! Switching to new format! (use_parallel_residual=False)\n");
+                printf("\n---\nOld RedPajama NeoX Detected! Switching to new format! (use_parallel_residual=False)\n");
                 ggml_free(neox_ctx.ctx);
                 return ModelLoadResult::RETRY_LOAD;
             }
@@ -418,7 +421,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         //newer format has bit unshuffling
         SetQuantsUnshuffled(file_format == FileFormat::GPTJ_4);   
 
-        ModelLoadResult loadresult = gptj_model_load(params.model, gptj_ctx_v2, vocab);
+        ModelLoadResult loadresult = gptj_model_load(params.model, gptj_ctx_v2, vocab, inputs.gpulayers);
         if (loadresult == ModelLoadResult::FAIL)
         {
             fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, params.model.c_str());
@@ -695,7 +698,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs, generation_o
             }
             else if(file_format==FileFormat::NEOX_1 || file_format == FileFormat::NEOX_2 || file_format == FileFormat::NEOX_3 || file_format==FileFormat::NEOX_4 || file_format==FileFormat::NEOX_5)
             {
-                evalres = stablelm_eval(neox_ctx, params.n_threads, n_past, embd, logits, mem_per_token, file_format);
+                evalres = gpt_neox_eval(neox_ctx, params.n_threads, n_past, embd, logits, mem_per_token);
             }
             else if(file_format==FileFormat::GPTJ_1 || file_format==FileFormat::GPTJ_2)
             {
